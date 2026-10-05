@@ -488,6 +488,169 @@ public:
         return result;
     };
 
+private:
+    // The five planes of a filtered spectrum -- value, the two shear
+    // responses and the two translation responses, the shear responses
+    // including the position coupling of a reference point at the cell
+    // center -- handed one at a time to ``put(idx, slot, value)`` with slot
+    // in (0: v, 1: g1, 2: g2, 3: x1, 4: x2).  The x1/x2 planes come last
+    // and ADD their coupling into slots 1 and 2, so ``put`` must
+    // accumulate (``+=``) for those two slots.  The same sequence as
+    // prepare_qnumber_vector_band, for the probe's planes.
+    template <class Put>
+    void five_planes(
+        const std::vector<std::complex<double>>& spec,
+        Put put
+    ) {
+        const ssize_t npix = static_cast<ssize_t>(this->ny) * this->nx;
+        const double nf = img_obj.norm();
+        {
+            img_obj.set_f(spec);
+            img_obj.ifft_raw();
+            const double* tmp_r = img_obj.view_r();
+            for (ssize_t idx = 0; idx < npix; ++idx) {
+                put(idx, 0, tmp_r[idx] * nf);
+            }
+        }
+        {
+            img_obj.set_f(spec);
+            img_obj.filter(gauss_g1_model);
+            img_obj.ifft_raw();
+            const double* tmp_r = img_obj.view_r();
+            for (ssize_t idx = 0; idx < npix; ++idx) {
+                put(idx, 1, tmp_r[idx] * nf);
+            }
+        }
+        {
+            img_obj.set_f(spec);
+            img_obj.filter(gauss_g2_model);
+            img_obj.ifft_raw();
+            const double* tmp_r = img_obj.view_r();
+            for (ssize_t idx = 0; idx < npix; ++idx) {
+                put(idx, 2, tmp_r[idx] * nf);
+            }
+        }
+        {
+            img_obj.set_f(spec);
+            img_obj.filter(gauss_x1_model);
+            img_obj.ifft_raw();
+            const double* tmp_r = img_obj.view_r();
+            for (ssize_t j = 0, idx = 0; j < this->ny; ++j) {
+                const double y = (j - this->ny2) * this->scale;
+                for (ssize_t i = 0; i < this->nx; ++i, ++idx) {
+                    const double x = (i - this->nx2) * this->scale;
+                    const double t = tmp_r[idx] * nf;
+                    put(idx, 1, x * t);
+                    put(idx, 2, y * t);
+                    put(idx, 3, t);
+                }
+            }
+        }
+        {
+            img_obj.set_f(spec);
+            img_obj.filter(gauss_x2_model);
+            img_obj.ifft_raw();
+            const double* tmp_r = img_obj.view_r();
+            for (ssize_t j = 0, idx = 0; j < this->ny; ++j) {
+                const double y = (j - this->ny2) * this->scale;
+                for (ssize_t i = 0; i < this->nx; ++i, ++idx) {
+                    const double x = (i - this->nx2) * this->scale;
+                    const double t = tmp_r[idx] * nf;
+                    put(idx, 1, -y * t);
+                    put(idx, 2, x * t);
+                    put(idx, 4, t);
+                }
+            }
+        }
+    };
+
+public:
+    // The noise-bias probe's planes (math::dual, ProbeLayout): the image's
+    // five planes as prepare_qnumber_vector_band builds them WITHOUT the
+    // renoising, the same five planes of the pure-noise image in the
+    // directions u, ug1, ug2, ux1, ux2, and the value of the noise filtered
+    // with the 90-degree-rotated kernel in ur.  The second-order slots are
+    // zero at the pixel; the arithmetic downstream fills them.  No noise is
+    // added to the image, which is where the probe gains over renoising;
+    // the noise image is therefore required.  Eleven inverse FFTs.
+    std::vector<math::hnumber>
+    prepare_hnumber_vector_band(
+        const py::array_t<pixel_t>& img_stack,
+        const py::array_t<double>& psf_stack,
+        ssize_t band,
+        int xcen,
+        int ycen,
+        const py::array_t<pixel_t>& noise_stack
+    ) {
+        using L = math::ProbeLayout;
+        const std::vector<std::complex<double>> karr =
+            img_obj.get_lens_kernel_vec(
+                psf_stack,
+                band,
+                gauss_model,
+                klim
+            );
+        const ssize_t npix = static_cast<ssize_t>(this->ny) * this->nx;
+        std::vector<math::hnumber> result(npix);
+
+        // the image through the kernel
+        img_obj.set_r_band(img_stack, band, xcen, ycen, false);
+        img_obj.fft();
+        img_obj.filter(karr);
+        const std::vector<std::complex<double>> img_f = img_obj.draw_f_vec();
+        this->five_planes(
+            img_f,
+            [&result](ssize_t idx, int slot, double t) {
+                math::hnumber& h = result[idx];
+                switch (slot) {
+                    case 0: h.v = t; break;
+                    case 1: h.d[L::g1] += t; break;
+                    case 2: h.d[L::g2] += t; break;
+                    case 3: h.d[L::x1] = t; break;
+                    default: h.d[L::x2] = t; break;
+                }
+            }
+        );
+
+        // the noise through the same kernel
+        img_obj.set_r_band(noise_stack, band, xcen, ycen, false);
+        img_obj.fft();
+        img_obj.filter(karr);
+        const std::vector<std::complex<double>> noise_f =
+            img_obj.draw_f_vec();
+        this->five_planes(
+            noise_f,
+            [&result](ssize_t idx, int slot, double t) {
+                math::hnumber& h = result[idx];
+                switch (slot) {
+                    case 0: h.d[L::u] = t; break;
+                    case 1: h.d[L::ug1] += t; break;
+                    case 2: h.d[L::ug2] += t; break;
+                    case 3: h.d[L::ux1] = t; break;
+                    default: h.d[L::ux2] = t; break;
+                }
+            }
+        );
+
+        // the noise through the rotated kernel, value only
+        {
+            img_obj.set_f(karr);
+            img_obj.rotate90_f();
+            const std::vector<std::complex<double>> karr_r =
+                img_obj.draw_f_vec();
+            img_obj.set_r_band(noise_stack, band, xcen, ycen, false);
+            img_obj.fft();
+            img_obj.filter(karr_r);
+            img_obj.ifft_raw();
+            const double nf = img_obj.norm();
+            const double* tmp_r = img_obj.view_r();
+            for (ssize_t idx = 0; idx < npix; ++idx) {
+                result[idx].d[L::ur] = tmp_r[idx] * nf;
+            }
+        }
+        return result;
+    };
+
     std::vector<math::qnumber>
     prepare_qnumber_vector(
         const py::array_t<pixel_t>& img_array,
@@ -973,6 +1136,36 @@ coadd_smoothed_variance(
 // The coadded qimage for one cell.  Bands are accumulated one at a time, so
 // only two qimages are ever held at once (about 5 MB for a 250 x 250 cell)
 // rather than one per band.
+// The probe's planes of one band of a cell (math::hnumber), as
+// prepare_data_cell builds the qnumber planes.
+inline std::vector<math::hnumber>
+prepare_data_cell_probe(
+    const py::array_t<pixel_t>& img_array,
+    const py::array_t<double>& psf_array,
+    const py::array_t<pixel_t>& noise_array,
+    double sigma_arcsec,
+    const geometry::cell & cell,
+    ssize_t band=0
+){
+    ImageQLease lease(
+        cell.nx,
+        cell.ny,
+        cell.scale,
+        sigma_arcsec,
+        3.1 / cell.scale,
+        true
+    );
+    ImageQ& img_obj = lease.get();
+    return img_obj.prepare_hnumber_vector_band(
+        img_array,
+        psf_array,
+        band,
+        cell.xcen,
+        cell.ycen,
+        noise_array
+    );
+};
+
 inline std::vector<math::qnumber>
 prepare_data_cell_coadd(
     const py::array_t<pixel_t>& img_stack,

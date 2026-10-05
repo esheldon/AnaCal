@@ -3,8 +3,26 @@
 
 #include "image.h"
 
+#include <type_traits>
+
 namespace anacal {
 namespace detector {
+
+// The detection below is written once for any number type Q with the
+// qnumber operators (qnumber itself, or a math::dual layout such as the
+// noise-bias probe's hnumber) and any record type Rec with the members
+// ``x1_det, x2_det, cell_id`` and the Q-valued ``wsel, bkg``:
+// table::galNumber for the qnumber path, probe::probeDetection for the
+// probe.  A galNumber also seeds its model's center from the detected
+// pixel; a record without a ``model`` member skips that.
+namespace detail {
+    template <class Rec, class = void>
+    struct has_model : std::false_type {};
+    template <class Rec>
+    struct has_model<
+        Rec, std::void_t<decltype(std::declval<Rec&>().model)>
+    > : std::true_type {};
+}
 
 inline constexpr int drmax = 5;
 inline constexpr int drmax2 = drmax * drmax;
@@ -100,10 +118,11 @@ make_bkg_kernel(double scale) {
     return bk;
 };
 
+template <class Rec, class Q>
 inline
 void measure_pixel(
-    std::vector<table::galNumber> & catalog,
-    const std::vector<math::qnumber> & data,
+    std::vector<Rec> & catalog,
+    const std::vector<Q> & data,
     int x,                                      // index on image
     int y,
     const geometry::cell & cell,
@@ -123,7 +142,7 @@ void measure_pixel(
     // Radius-5 disk: di^2 + dj^2 <= 25 inclusive, excluding the centre, so
     // 80 neighbour differences.  The disk is invariant under a 90 degree
     // rotation, which is what keeps the weight free of additive shear bias.
-    math::qnumber wsel = math::qnumber(1.0);
+    Q wsel = Q(1.0);
     for (int dj = -drmax; dj <= drmax; dj++) {
         int dj2 = dj * dj;
         for (int di = -drmax; di <= drmax; di++) {
@@ -139,17 +158,19 @@ void measure_pixel(
         }
     }
     if (wsel.v > 0.0) {
-        table::galNumber src;
+        Rec src;
         src.x1_det = x * cell.scale;
         src.x2_det = y * cell.scale;
-        src.model.x1.v = src.x1_det;
-        src.model.x2.v = src.x2_det;
+        if constexpr (detail::has_model<Rec>::value) {
+            src.model.x1.v = src.x1_det;
+            src.model.x2.v = src.x2_det;
+        }
 
         // Walk outward, blending each ring against the running estimate.
         // Ring weights are pre-normalised, so each ``b`` is already a level.
-        math::qnumber bkg;
+        Q bkg;
         for (std::size_t k = 0; k + 1 < bk.ring_start.size(); ++k) {
-            math::qnumber b;
+            Q b;
             for (std::size_t t = bk.ring_start[k];
                  t < bk.ring_start[k + 1]; ++t) {
                 int _i = (j + bk.dj[t]) * cell.nx + (i + bk.di[t]);
@@ -158,7 +179,7 @@ void measure_pixel(
             if (k == 0) {
                 bkg = b;
             } else {
-                math::qnumber ratio = math::ssfunc1(bkg - b, 0.0, std_noise);
+                Q ratio = math::ssfunc1(bkg - b, 0.0, std_noise);
                 // ratio * b + (1 - ratio) * bkg, using only qnumber + - *
                 bkg = bkg + ratio * (b - bkg);
             }
@@ -187,9 +208,12 @@ void measure_pixel(
 
 // Scan a cell for peaks.  Takes the qimage and its noise level already built,
 // so that a single-band image and a multi-band coadd share this code exactly.
-inline std::vector<table::galNumber>
-find_peaks_from_data(
-    const std::vector<math::qnumber>& data,
+// Generic in the number and record types as measure_pixel is; the record
+// type is given explicitly since it is the return type.
+template <class Rec, class Q>
+inline std::vector<Rec>
+find_peaks_from_data_t(
+    const std::vector<Q>& data,
     double std_noise,
     double snr_min,
     double omega_f,
@@ -236,7 +260,7 @@ find_peaks_from_data(
     int xstart = std::max(image_bound, cell.xmin_in);
     int xend = std::min(image_nx - image_bound, cell.xmax_in);
 
-    std::vector<table::galNumber> catalog;
+    std::vector<Rec> catalog;
     for (int y = ystart; y < yend; ++y) {
         int j = y - cell.ymin;
         for (int x = xstart; x < xend; ++x) {
@@ -267,6 +291,24 @@ find_peaks_from_data(
         }
     }
     return catalog;
+};
+
+inline std::vector<table::galNumber>
+find_peaks_from_data(
+    const std::vector<math::qnumber>& data,
+    double std_noise,
+    double snr_min,
+    double omega_f,
+    double omega_v,
+    const geometry::cell & cell,
+    int image_ny,
+    int image_nx,
+    int image_bound=0
+) {
+    return find_peaks_from_data_t<table::galNumber>(
+        data, std_noise, snr_min, omega_f, omega_v, cell,
+        image_ny, image_nx, image_bound
+    );
 };
 
 // Build the detection qimage -- a single band, or the inverse-variance

@@ -8,6 +8,7 @@
 #include "anacal/ngmix.h"
 #include "anacal/table.h"
 #include "anacal/detector.h"
+#include "anacal/probe.h"
 #include "anacal/task.h"
 #include "anacal/psfmodel.h"
 #include "anacal/math/tensor.h"

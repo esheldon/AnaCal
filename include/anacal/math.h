@@ -2,6 +2,7 @@
 #define ANACAL_MATH_H
 
 #include "math/qnumber.h"
+#include "math/dual.h"
 #include "math/qmatrix.h"
 #include "math/pooling.h"
 #include "math/loss.h"

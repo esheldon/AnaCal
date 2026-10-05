@@ -41,6 +41,7 @@ ext_modules.append(
             "src/ngmix.cpp",
             "src/table.cpp",
             "src/detector.cpp",
+            "src/probe.cpp",
             "src/geometry.cpp",
             "src/task.cpp",
             "src/psfmodel.cpp",

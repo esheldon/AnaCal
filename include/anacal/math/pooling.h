@@ -7,6 +7,8 @@ namespace math {
     namespace detail {
         inline double scalar_of(double t) { return t; }
         inline double scalar_of(const qnumber& t) { return t.v; }
+        template <class L>
+        inline double scalar_of(const dual<L>& t) { return t.v; }
     }
 
     // Shared clamp shell of the smooth-step family: map x onto
@@ -43,6 +45,15 @@ namespace math {
         });
     }
 
+    // The same step of a multi-dual number (dual.h): the polynomial goes
+    // through the type's own operators, so the second-order slots follow.
+    template <class L>
+    inline dual<L> ssfunc1(const dual<L>& x, double mu, double sigma) {
+        return ssfunc_shell(x, mu, sigma, [](const dual<L>& t) {
+            return -2.0 * pow(t, 3.0) + 3.0 * pow(t, 2.0);
+        });
+    }
+
     inline double ssfunc1(double x, double mu, double sigma) {
         return ssfunc_shell(x, mu, sigma, [](double t) {
             return -2.0 * t * t * t + 3 * t * t;
@@ -60,6 +71,14 @@ namespace math {
     inline qnumber ssfunc2(qnumber x, T mu, T sigma) {
         return ssfunc_shell(x, mu, sigma, [](const qnumber& t) {
             return 6 * pow(t, 5) - 15 * pow(t, 4) + 10 * pow(t, 3);
+        });
+    }
+
+    template <class L, typename T>
+    inline dual<L> ssfunc2(const dual<L>& x, T mu, T sigma) {
+        return ssfunc_shell(x, mu, sigma, [](const dual<L>& t) {
+            return 6.0 * pow(t, 5.0) - 15.0 * pow(t, 4.0)
+                 + 10.0 * pow(t, 3.0);
         });
     }
 

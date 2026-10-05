@@ -19,6 +19,7 @@ namespace anacal {
         ngmix::pyExportNgmix(m);
         table::pyExportTable(m);
         detector::pyExportDetector(m);
+        probe::pyExportProbe(m);
         geometry::pyExportGeometry(m);
         task::pyExportTask(m);
         psfmodel::pyExportPsfModel(m);
